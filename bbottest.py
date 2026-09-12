@@ -200,6 +200,11 @@ def webhook():
 def index():
     return "Bot is running!", 200
 
+# ===== ЭТО ДОБАВИТЬ - HEALTHCHECK ДЛЯ RENDER =====
+@app.route('/health')
+def health():
+    return "OK", 200
+
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
