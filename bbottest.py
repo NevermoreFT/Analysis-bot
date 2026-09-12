@@ -1,61 +1,48 @@
+import os
 import telebot
 from telebot import types
 import re
 from datetime import datetime
 import logging
+from flask import Flask
+import threading
 
-BOT_TOKEN = "8968271583:AAE8x6CdtvoaHnHEN7ezD7ebk8JWbMXDvNo"
+# ===== ТОКЕН ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ =====
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set!")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 logging.basicConfig(level=logging.INFO)
 
+# ===== ХРАНИЛИЩЕ =====
 user_data = {}
-user_language = {}
 
-TEXTS = {
-    'ru': {
-        'choose_lang': "🌐 Выберите язык:",
-        'lang_changed': "✅ Язык изменен на русский.",
-        'welcome': "👋 Привет! Я бот для анализа отчетов.\n\n"
-                   "📝 Отправляйте мне сообщения с пополнениями и изъятиями.\n"
-                   "Когда закончите, отправьте одну из команд:\n"
-                   "`кофемофебух` или `кофемоефус` или `буххх`\n\n"
-                   "Я соберу все данные и выдам полный отчет!",
-        'new_day': "📅 Начинаем новый день!\n"
-                   "Отправляйте мне сообщения с пополнениями и изъятиями.\n"
-                   "Для отчета отправьте: кофемофебух",
-        'message_saved': "✅ Сообщение сохранено!",
-        'unknown': "❌ Не удалось распознать сообщение.\n"
-                   "Примеры:\n"
-                   "✅ Пополнение сейфа из филиала НТД на сумму : 530.000 сум\n"
-                   "❌ Изъятие 25.000 сум на дорожные расходы",
-        'no_data': "❌ Нет данных для отчета.\n"
-                   "Отправьте сначала пополнения и изъятия.",
-        'try_again': "\n\n📤 Отправьте буххх для нового отчета.\n"
-                     "Или новый день для очистки данных."
-    },
-    'uz': {
-        'choose_lang': "🌐 Tilni tanlang:",
-        'lang_changed': "✅ Til o'zbek tiliga o'zgartirildi.",
-        'welcome': "👋 Salom! Men hisobotlarni tahlil qilish uchun botman.\n\n"
-                   "📝 Menga tushum va chiqimlar haqida xabarlar yuboring.\n"
-                   "Tugatganingizda, buyruqlardan birini yuboring:\n"
-                   "`кофемофебух` yoki `кофемоефус` yoki `буххх`\n\n"
-                   "Men barcha ma'lumotlarni yig'ib, to'liq hisobot beraman!",
-        'new_day': "📅 Yangi kun boshlaymiz!\n"
-                   "Menga tushum va chiqimlar haqida xabarlar yuboring.\n"
-                   "Hisobot uchun: кофемофебух",
-        'message_saved': "✅ Xabar saqlandi!",
-        'unknown': "❌ Xabarni taniy olmadim.\n"
-                   "Misollar:\n"
-                   "✅ Пополнение сейфа из филиала НТД на сумму : 530.000 сум\n"
-                   "❌ Изъятие 25.000 сум на дорожные расходы",
-        'no_data': "❌ Hisobot uchun ma'lumot yo'q.\n"
-                   "Avval tushum va chiqimlarni yuboring.",
-        'try_again': "\n\n📤 Yangi hisobot uchun буххх yuboring.\n"
-                     "Yoki ma'lumotlarni tozalash uchun новый день."
-    }
-}
+# ===== ТЕКСТЫ =====
+WELCOME = ("👋 Привет! Я бот для анализа отчетов.\n\n"
+           "📝 Отправляйте мне сообщения с пополнениями и изъятиями.\n"
+           "Когда закончите, отправьте команду:\n"
+           "`буххх`\n\n"
+           "Я соберу все данные и выдам полный отчет!")
 
+NEW_DAY = ("📅 Начинаем новый день!\n"
+           "Отправляйте мне сообщения с пополнениями и изъятиями.\n"
+           "Для отчета отправьте: буххх")
+
+MESSAGE_SAVED = "✅ Сообщение сохранено!"
+
+UNKNOWN = ("❌ Не удалось распознать сообщение.\n"
+           "Примеры:\n"
+           "✅ Пополнение сейфа из филиала НТД на сумму : 530.000 сум\n"
+           "❌ Изъятие 25.000 сум на дорожные расходы")
+
+NO_DATA = ("❌ Нет данных для отчета.\n"
+           "Отправьте сначала пополнения и изъятия.")
+
+TRY_AGAIN = ("\n\n📤 Отправьте буххх для нового отчета.\n"
+             "Или новый день для очистки данных.")
+
+# ===== ФУНКЦИЯ РАЗБИВКИ ДЛИННОГО СООБЩЕНИЯ =====
 def split_message(text, max_length=4000):
     if len(text) <= max_length:
         return [text]
@@ -84,10 +71,12 @@ def send_long_message(chat_id, text):
         else:
             bot.send_message(chat_id, f"📄 Продолжение {i+1}/{len(parts)}:\n\n{part}")
 
+# ===== ФУНКЦИЯ ПАРСИНГА =====
 def parse_message(text):
     result = None
     text_lower = text.lower()
     
+    # Итоговый остаток
     if 'итоговый остаток' in text_lower or 'остаток наличных' in text_lower:
         amount_match = re.search(r'составляет\s*:?\s*([\d.,]+)', text)
         if amount_match:
@@ -96,112 +85,70 @@ def parse_message(text):
             result = {'type': 'balance', 'category': 'Остаток', 'amount': amount, 'raw': text}
             return result
     
-    if '✅' in text or 'Пополнение' in text or 'пополнение' in text_lower:
-        amount_match = re.search(r'(?:сумме?|сум)\s*:?\s*([\d.,]+)', text)
+    # Приступил с кассой
+    if 'приступил с кассой' in text_lower or 'приступил' in text_lower:
+        result = {'type': 'start', 'category': 'Начало', 'amount': 0, 'raw': text}
+        return result
+    
+    # Пополнение
+    if '✅' in text or 'пополнение' in text_lower or 'Пополнение' in text:
+        amount_match = re.search(r'сумм[уе]?\s*:?\s*([\d.,]+)', text)
         if not amount_match:
             amount_match = re.search(r':\s*([\d.,]+)', text)
         if not amount_match:
-            amount_match = re.search(r'(\d+[\.,]?\d*)\s*(?:сум|so\'m)', text)
+            amount_match = re.search(r'([\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?)\s*(?:сум|so\'m)', text)
         
         if amount_match:
             amount_str = amount_match.group(1).replace('.', '').replace(',', '')
             amount = float(amount_str) if amount_str else 0
             
-            category = 'Пополнение'
-            if 'Микрорайон' in text or 'микрорайон' in text_lower:
-                category = 'Микрорайон'
-            elif 'НТД' in text or 'нтд' in text_lower:
-                category = 'НТД'
-            elif 'Оромгох' in text or 'оромгох' in text_lower:
-                category = 'Оромгох'
-            elif 'Учредител' in text or 'учредител' in text_lower:
-                category = 'Учредители'
-            elif 'Street' in text or 'street' in text_lower:
-                category = 'Street 93'
-            
-            result = {'type': 'income', 'category': category, 'amount': amount, 'raw': text}
+            result = {'type': 'income', 'category': 'Пополнение', 'amount': amount, 'raw': text}
             return result
     
+    # Изъятие
     if ('❌' in text or 
-        'Изъяти' in text or 'изъяти' in text_lower or 
-        'Выдано' in text or 'выдано' in text_lower or
-        'Запрос на изъятия' in text_lower):
+        'изъяти' in text_lower or
+        'выдано' in text_lower or
+        'запрос на изъятия' in text_lower):
         
-        amount_match = re.search(r'(?:размере|сумме|сум)\s*:?\s*([\d.,]+)', text)
+        amount_match = re.search(r'размер[еа]?\s*:?\s*([\d.,]+)', text)
         if not amount_match:
             amount_match = re.search(r':\s*([\d.,]+)', text)
         if not amount_match:
-            amount_match = re.search(r'(\d+[\.,]?\d*)\s*(?:сум|so\'m)', text)
+            amount_match = re.search(r'([\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?)\s*(?:сум|so\'m)', text)
         
         if amount_match:
             amount_str = amount_match.group(1).replace('.', '').replace(',', '')
             amount = float(amount_str) if amount_str else 0
             
-            category = 'Изъятие'
-            if 'Фуад' in text or 'фуад' in text_lower:
-                category = 'Фуад Насруллаев'
-            elif 'Базаркому' in text or 'базаркому' in text_lower:
-                category = 'Базаркому'
-            elif 'Учредител' in text or 'учредител' in text_lower:
-                category = 'Учредитель'
-            elif 'зарплат' in text_lower or 'персонал' in text_lower:
-                category = 'Зарплата'
-            elif 'дорожн' in text_lower:
-                category = 'Дорожные расходы'
-            elif 'Bakery' in text or 'bakery' in text_lower:
-                category = 'Bakery'
-            elif 'Prime' in text or 'prime' in text_lower:
-                category = 'Prime Kofe Mofe'
-            
-            result = {'type': 'expense', 'category': category, 'amount': amount, 'raw': text}
+            result = {'type': 'expense', 'category': 'Изъятие', 'amount': amount, 'raw': text}
             return result
+    
+    # Закрытие смены
+    if 'закрытие смены' in text_lower or 'закрытие' in text_lower:
+        result = {'type': 'end', 'category': 'Конец', 'amount': 0, 'raw': text}
+        return result
     
     return None
 
-def extract_report_data(text):
-    data = {'income': 0, 'expense': 0, 'balance': 0, 'date': None}
-    
-    date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', text)
-    if date_match:
-        data['date'] = date_match.group(1)
-    
-    income_match = re.search(r'Общая пополнение\s*[^:]*:\s*([\d.,]+)', text)
-    if income_match:
-        data['income'] = float(income_match.group(1).replace('.', '').replace(',', ''))
-    
-    expense_match = re.search(r'Общая изъятия\s*[^:]*:\s*([\d.,]+)', text)
-    if expense_match:
-        data['expense'] = float(expense_match.group(1).replace('.', '').replace(',', ''))
-    
-    balance_match = re.search(r'Закрытие смены.*?Наличные\s*[-–]\s*([\d.,]+)', text, re.DOTALL)
-    if balance_match:
-        data['balance'] = float(balance_match.group(1).replace('.', '').replace(',', ''))
-    
-    if data['balance'] == 0:
-        balance_match2 = re.search(r'Всего\s*[-–]\s*([\d.,]+)', text)
-        if balance_match2:
-            data['balance'] = float(balance_match2.group(1).replace('.', '').replace(',', ''))
-    
-    return data
-
-def generate_report(user_id, lang):
+# ===== ФУНКЦИЯ ГЕНЕРАЦИИ ОТЧЕТА =====
+def generate_report(user_id):
     if user_id not in user_data or not user_data[user_id]['messages']:
-        return TEXTS[lang]['no_data']
+        return NO_DATA
     
     data = user_data[user_id]
     messages = data['messages']
     
     income_messages = []
     expense_messages = []
-    start_messages = []
-    end_messages = []
-    other_messages = []
+    start_message = None
+    end_message = None
     
     income_total = 0
     expense_total = 0
     
     for msg in messages:
-        # Убираем @Fuad_Nasrullayev из сообщений
+        # Убираем @Fuad_Nasrullayev
         msg = msg.replace('@Fuad_Nasrullayev', '').replace('@fuad_nasrullayev', '')
         
         parsed = parse_message(msg)
@@ -212,165 +159,132 @@ def generate_report(user_id, lang):
             elif parsed['type'] == 'expense':
                 expense_messages.append(msg)
                 expense_total += parsed['amount']
-            elif parsed['type'] == 'balance':
-                expense_messages.append(msg)
-        else:
-            if 'Приступил с кассой' in msg or 'Приступил' in msg:
-                start_messages.append(msg)
-            elif 'Закрытие смены' in msg or 'Закрытие' in msg:
-                end_messages.append(msg)
-            else:
-                if 'Общая пополнение' in msg or 'Общая изъятия' in msg:
-                    other_messages.append(msg)
+            elif parsed['type'] == 'start':
+                start_message = msg
+            elif parsed['type'] == 'end':
+                end_message = msg
     
-    report_date = data.get('date', datetime.now().strftime('%d.%m.%Y'))
+    # Определяем дату
+    report_date = datetime.now().strftime('%d.%m.%Y')
+    if start_message:
+        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', start_message)
+        if date_match:
+            report_date = date_match.group(1)
     
-    report = f"📊 ОТЧЕТ ЗА {report_date}\n\n"
+    # ===== ФОРМИРУЕМ ОТЧЕТ =====
+    report = ""
     
-    if start_messages:
-        for msg in start_messages:
-            report += msg + "\n"
+    # 1. Начало смены
+    if start_message:
+        report += start_message + "\n\n"
     else:
-        report += f"{report_date} - Приступил с кассой в сейфе \n"
+        report += f"{report_date} - Приступил с кассой в сейфе\n"
         report += f"Наличные - 0 сум\n"
         report += f"Карта - 0\n"
-        report += f"Всего - 0 сум\n"
+        report += f"Всего - 0 сум\n\n"
     
-    report += f"\nОбщая пополнение в сейфе наличных на сумму - {income_total:,.0f} сум\n"
-    report += f"Общая пополнение карты на сумму - 0\n"
-    report += f"Общая пополнение в сейфа в долларах - 0$\n\n"
+    # 2. Общая пополнение
+    report += f"Общая пополнение в сейфе наличных на сумму - {income_total:,.0f} сум\n"
+    report += f"Общая пополнение карты на сумму - {income_total:,.0f} сум\n"
+    report += f"Общая пополнение в сейфа в долларах - 0 $\n\n"
     
+    # 3. Все пополнения
     for msg in income_messages:
         report += msg + "\n"
     
+    # 4. Общая изъятия
     report += f"\nОбщая изъятия денег из сейфа на сумму - {expense_total:,.0f} сум\n"
     report += f"Общая изъятия наличных на сумму - {expense_total:,.0f} сум\n"
     report += f"Общая изъятия из карты на сумму - 0\n"
-    report += f"Общая изъятия в долларах - 0$\n\n"
+    report += f"Общая изъятия из сейфа в долларах - 0 $\n\n"
     
+    # 5. Все изъятия
     for msg in expense_messages:
         report += msg + "\n"
     
-    for msg in other_messages:
-        report += msg + "\n"
-    
-    if end_messages:
-        for msg in end_messages:
-            report += msg + "\n"
+    # 6. Закрытие смены
+    if end_message:
+        report += "\n" + end_message
     else:
-        report += f"\nЗакрытие смены на {report_date} \n"
+        report += f"\n{report_date} - Приступил с кассой в сейфе\n"
         report += f"Наличные - 0 сум\n"
         report += f"Карта - 0\n"
-        report += f"Всего - 0 сум\n"
+        report += f"Всего - 0 сум"
     
-    report += TEXTS[lang]['try_again']
+    report += TRY_AGAIN
     
     return report
 
+# ===== КОМАНДА /START =====
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.chat.id
     
     if user_id in user_data:
-        user_data[user_id] = {'messages': [], 'date': None}
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    btn_ru = types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru")
-    btn_uz = types.InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="lang_uz")
-    markup.add(btn_ru, btn_uz)
-    
-    bot.send_message(
-        user_id,
-        "🌐 Выберите язык / Tilni tanlang:",
-        reply_markup=markup
-    )
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    user_id = call.message.chat.id
-    
-    if call.data == "lang_ru":
-        user_language[user_id] = 'ru'
-        text = TEXTS['ru']['lang_changed'] + "\n\n" + TEXTS['ru']['welcome']
-    elif call.data == "lang_uz":
-        user_language[user_id] = 'uz'
-        text = TEXTS['uz']['lang_changed'] + "\n\n" + TEXTS['uz']['welcome']
+        user_data[user_id] = {'messages': []}
     else:
-        return
+        user_data[user_id] = {'messages': []}
     
-    if user_id not in user_data:
-        user_data[user_id] = {'messages': [], 'date': None}
-    
-    bot.edit_message_text(
-        text,
-        chat_id=user_id,
-        message_id=call.message.message_id
-    )
+    bot.send_message(user_id, WELCOME)
 
+# ===== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ =====
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.chat.id
     text = message.text
     
-    if user_id not in user_language:
-        bot.reply_to(
-            message,
-            "⚠️ Сначала выберите язык: /start\n\n⚠️ Avval tilni tanlang: /start"
-        )
-        return
-    
-    lang = user_language[user_id]
-    
     if user_id not in user_data:
-        user_data[user_id] = {'messages': [], 'date': None}
+        user_data[user_id] = {'messages': []}
     
-    trigger_words = [
-        "кофемофебух",
-        "кофемоефус",
-        "кофемоефе",
-        "буххх"
-    ]
-    
-    if text.lower().strip() in trigger_words:
-        report = generate_report(user_id, lang)
+    # ===== ТРИГГЕР =====
+    if text.lower().strip() == "буххх":
+        report = generate_report(user_id)
         send_long_message(user_id, report)
         return
     
+    # ===== НОВЫЙ ДЕНЬ =====
     if text.lower().strip() in ["новый день", "очистить"]:
-        user_data[user_id] = {'messages': [], 'date': None}
-        bot.reply_to(message, TEXTS[lang]['new_day'])
+        user_data[user_id] = {'messages': []}
+        bot.reply_to(message, NEW_DAY)
         return
     
+    # ===== СОХРАНЯЕМ =====
     parsed = parse_message(text)
     
     if parsed:
         user_data[user_id]['messages'].append(text)
-        bot.reply_to(message, TEXTS[lang]['message_saved'])
-        
-        if 'итоговый остаток' in text.lower() or 'остаток наличных' in text.lower():
-            if not user_data[user_id].get('date'):
-                user_data[user_id]['date'] = datetime.now().strftime('%d.%m.%Y')
-        
-        if 'Приступил с кассой' in text or 'Закрытие смены' in text:
-            report_data = extract_report_data(text)
-            if report_data.get('date'):
-                user_data[user_id]['date'] = report_data['date']
+        bot.reply_to(message, MESSAGE_SAVED)
     else:
-        if ('Приступил с кассой' in text or 
-            'Закрытие смены' in text or 
-            'Общая пополнение' in text or
-            'Общая изъятия' in text):
-            
+        # Проверяем на общие итоги
+        if ('общая пополнение' in text.lower() or 
+            'общая изъятия' in text.lower() or
+            'приступил с кассой' in text.lower() or
+            'закрытие смены' in text.lower()):
             user_data[user_id]['messages'].append(text)
-            report_data = extract_report_data(text)
-            if report_data.get('date'):
-                user_data[user_id]['date'] = report_data['date']
-            bot.reply_to(message, TEXTS[lang]['message_saved'])
+            bot.reply_to(message, MESSAGE_SAVED)
         else:
-            bot.reply_to(message, TEXTS[lang]['unknown'])
+            bot.reply_to(message, UNKNOWN)
 
-if __name__ == '__main__':
-    print("🤖 Бот запущен и готов к работе!")
-    print("📊 Ожидает сообщения в личном чате")
-    print("🔑 Триггеры: кофемофебух, кофемоефус, кофемоефе, буххх")
+# ===== FLASK ВЕБ-СЕРВЕР ДЛЯ RENDER =====
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+def run_bot_polling():
+    print("Starting bot polling...")
     bot.infinity_polling()
+
+# ===== ЗАПУСК =====
+if __name__ == '__main__':
+    bot_thread = threading.Thread(target=run_bot_polling)
+    bot_thread.start()
+    
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting Flask server on port {port}...")
+    app.run(host="0.0.0.0", port=port)
